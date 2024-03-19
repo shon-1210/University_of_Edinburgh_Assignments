@@ -330,7 +330,7 @@ while True:
 
 
     ### NOTE_09_Details: Generate the fasta file which we will need for the further processing stages. Futher, asking the user if they are satisfied with the dataset that was displayed and giving them the option to go back to the input section if they wish to. Files will be deleted as per the choice of the user ###
-    ### NOTE_09_STATUS: OPEN ###
+    ### NOTE_09_STATUS: CLOSED ###
 
     time.sleep(4)
 
