@@ -1,0 +1,541 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+    title: "Affymetrix Microarray Minimal pipeline"
+    author: "B236494 20/04/2024"
+    output: html_document
+
+```{r setup + libload, include=FALSE}
+# This is the setup code chunk that is 
+# only executed once to load the necessary libraries
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(limma)
+library(affy)
+library(annotate)
+library(mouse4302.db)# load chip-specific annotation
+library(ggplot2)
+library(knitr)
+library(tinytex)
+
+# install.packages("scatterplot3d",repo="http://cran.ma.imperia#l.ac.uk")
+# Then load the library
+library(scatterplot3d)
+```
+
+# B236494 - Affymetrix Microarray Analysis Basic Workflow
+
+This code has been adapted from the BasicAnalysisScript.Rmd file provided by Simon Tomlinson. This code has been altered to account for author specific input files and samples while retaining the main features of the pipeline. The R Script can be generated for this document by running the last chunk which has been turned off by default Interpretations of the results have been provided alongside the results for convenient viewing. Comments have been added to aid in understanding the flow of execution Please ensure that the right .CEL are located in the working directory for the Code to work. This can be downloaded from the GEO website using the supplementary code provided at the end of the report.
+
+Note: An additional analysis tool was identified known as GEO2R, the analysis of an entry in GEO can also be done using this. It is available at [https://www.ncbi.nlm.nih.gov/geo/geo2r/](https://www.ncbi.nlm.nih.gov/geo/geo2r/?acc=GSE137166)
+
+# Pipeline Steps:
+
+## Loading Data & Introduction
+
+Using the read.AnnotatedDataFrame() the targets are loaded from "B236494_edited_final_targets_file.txt" file into an object. The parameters ensure that the header is accounted for. Following this, the ReadAffy() is used to load information from the .CEL files that were previously extracted from the .tar file that was obtained from Gene Expression Omnibus (GEO).
+
+The samples are from the study, "Endometrial epithelial ARID1A is critical for uterine gland function in early pregnancy establishment" by Marquardt *et al.,* with GEO accession number GSE137166. It was an expression profiling by array experiment type.
+
+AT-rich interaction domain 1A (ARID1A) is a large protein switch/sucrose non-fermentable (SWI/SNF) chromatin remodeling complex subunit which acts as a tumor suppressor.
+
+The *Arid1a* gene was known to have a vital function in regulating the development of the endometrial gland which is essential for fertility after maturity and normal uterine function. Marquardt *et al.* presented evidence of how ARID1A binds and the proceeds to modulate transcription of the *Foxa2* gene that is essential for endometrial gland functioning. They also showed that deletion of *Arid1a* in a uterine specific context results in a severe defect to gland development and consequentially diminished *Foxa2* and *Lif* expression.
+
+There were two types of mice that were used to study this gene. Arid1a d/d and Arid1a f/f mice. In Arid1a f/f the *Arid1a* has been retained while it has been deleted in the Arid1a d/d mice. At 2 weeks of growth, uteri of 3 of each type of mice was selected for RNA extraction and hybridization of Affymetrix microarrays.
+
+The sample names are as follows:
+
+-   GSM4072331 Arid1a f/f 1
+-   GSM4072332 Arid1a f/f 2
+-   GSM4072333 Arid1a f/f 3
+-   GSM4072334 Arid1a d/d 1
+-   GSM4072335 Arid1a d/d 2
+-   GSM4072336 Arid1a d/d 3
+
+The goals of this analysis pipeline involves a few key steps:
+
+-   To assess the quality of the data
+-   Perform Normalisation of the data using Robust Multi-array Average (RMA) approach
+-   Functional Enrichment Analysis
+-   Selection of Differentially Expressed Genes
+
+The Affy and Limma Bioconductor packages will be main tools that will be used throughout this pipeline with descriptions of the code as the execution proceeds.
+
+```{r dataload, echo=TRUE, warning=FALSE}
+
+# Load the target file into an AnnotatedDataFrame object
+adf<-read.AnnotatedDataFrame("B236494_edited_final_targets_file.txt",
+                             header=TRUE,row.names=1,as.is=TRUE)
+
+# Quickly loads all CEL files in the R working directory, 
+# Refer Supplementary Material if this doesn't work
+mydata <- ReadAffy()
+
+# Viewing a summary of the AffyBatch object that has 
+# all the .CEL files information loaded into it
+print(mydata)
+
+```
+
+## Build Quality Control Plots
+
+Now that the data has been loaded into the object, the quality of the Microarray data needs to assessed. This is important to ensure that the data has been successfully generated and that there is no severe contamination during the RNA extraction steps from the samples. Quality control can be performed by the use of box plots and a log density plot. Looking at the results of a box plot can give us an idea of the variation in data between the different replicates from each type of sample. If the difference between the replicates is large, this could imply that the extraction procedure was not done in a robust manner. The density histogram also serves the same function. Looking at these plots we can gain a preliminary idea of the quality of the data.
+
+```{r density_plot, echo=TRUE}
+#png("figures/density_plot.#png", width=1000, height=1000)
+
+# Quality control plots 1
+hist(mydata)
+
+#dev.off()
+
+```
+
+As visible from the output the density plot, the peak of expression seem to be consistent across different sample prior to normalisation which is is a sign of good quality, although some variation is distinguishable and expected. This can be observed further in the boxplot below.
+
+```{r boxplot raw, echo=TRUE}
+
+# Quality control plots 2
+
+#png("figures/boxplot_non_normalised_2.#png", width=1000, height=1000)
+
+# Specifying colours for each group
+colours <- c(rep("yellow",3),rep("red",3))
+
+# Reduce font size for axis labels to increase readability
+par(cex.axis=0.9)
+
+boxplot(mydata, col=colours, las=1)
+
+#dev.off()
+
+```
+
+The boxplots results is promising as well. The different measures of the boxplot provide a good overview of what the data is like for each sample and between the two groups, Arid1a f/f mice in yellow and Arid1a mice in red. The median line of all the samples seems to be quite similar which indicates that the overall expression values seem to consistent across the different samples as seen in the density plot. There is some variation within each group, as seen by the interquartile range (height of boxplots), between replicates but not to a very high level. Thus the replicates possess a good amount of similarity to each other. The lack of high variance between the two groups is representative of similar levels of expression between the two conditions.
+
+## Normalise the data using RMA
+
+The data quality control is typically followed by normalisation. This step is important for the steps that follow downstream such as identifying significant genes after performing differential expression analyses (DEA). RMA ensures that the noisy data that can be generated for a number of reason during microarray analyses is negated. It also performs a log transformation of hte data which can help in the stablisation of variance across different intensities observed. It finally summarises the complex data to give us a simple expression value for each gene of the samples present. This can be used in DEA.
+
+```{r normalise, echo=FALSE}
+
+# Performing the actual rma step
+eset <- rma(mydata)
+
+#uncomment below to view what eset is
+#eset
+
+# A matrix of the expression values using exprs() of expression values
+values <- exprs(eset)
+
+```
+
+The object "values" contains the individual expression values for each gene in our list and the individual expression value for each gene for a particular sample.
+
+## Plotting Normalised Data
+
+Now that we have the normalised data, we can plot these values to observe the changes that have been made following the RMA step. A boxplot will be used again to observe the changes. The use of the mva.pairs() is also employed which generates a MA plot for all the samples. The MA plot, which is described as a application of Bland-Altman plot, is a method of visually representing genomic data. It works by visualising the differences among measures taken in 2 different samples "by transforming the data onto M (log ratio) and A (mean average) scales, then plotting these values." This can be done for every sample against every sample which is what has been done here for both the normalised and non-normalised data. it provides valuable insight into the differences between samples and there is genuine difference the groups. If there was no difference then it would imply that there has been no effect on the induced condition on the group of mice whose Arid1a gene has been deleted which is not consistent with what is known. It gives confidence that the experiment was performed well.
+
+First, looking at the boxplot,
+
+```{r plot_normalised boxplot, echo=TRUE }
+
+# Boxplot to observe the results of normalisation
+#png("figures/boxplot_normalised_2.#png", width=1000, height=1000)
+
+# Increase font size for axis labels to increase readability
+par(cex.axis=1.4)
+boxplot(values, col=colours,las=1)
+
+#dev.off()
+```
+
+Normalisation has been performed accurately. The presence of outliers could be interesting and something that we will explore downstream. The interquartile range is seen to similar across the different groups means which they should be suitable for comparison for significant genes.
+
+Below, both the MVA plots will be compared.
+
+```{r plot_normalised mva without normalisation}
+
+# The mva plot for the non-normalised raw data
+
+#png("figures/mva_without_normalisation.#png", width=1000, height=1000)
+
+par(cex.axis=0.3, cex.lab=0.5, cex=0.5)
+mva.pairs(pm(mydata))
+
+#dev.off()
+```
+
+```{r plot_normalised mva with normalisation}
+
+# MA plot of all the samples which have been normalised
+
+#png("figures/mva_with_normalisation.#png", width=1000, height=1000)
+
+par(cex.axis=0.7, cex.lab=0.5, cex=0.5)
+mva.pairs(values)
+
+#dev.off()
+```
+
+Observing both MVA plots we can make some inferences. The consistency across the replicates from the same group i.e same biologcal condition implies that normalisation has been carried out successfully and a comparison between these samples is valid. Although there is consistency among the samples in a group there is still a difference betweent the two groups in the expression. This is promising because this means that the onset of the condition actually has resulted in a change in the expression levels.
+
+As the data has been normalised, we can now proceed to the next stage of identifying the significant genes in the dataset.
+
+## Plot Cluster Dendogram
+
+To get an idea which samples exhibit similar expression patterns, a hierarchical clustering is done. Using the hclust() a dendogram of the hierarchical clusters is visualised.
+
+```{r dendogram, echo=TRUE}
+
+#png("figures/Cluster_Dendogram.#png", width=500, height=500)
+
+# To facilitate interpretation, let’s replace the columns # # header,currently
+# displaying the filename, to show the name of each sample 
+# (if you have a targets file)
+colnames(values) <- rownames(pData(adf))
+# Performs hierarchical clustering with average linkage based on
+# Pearson’s Correlation Coefficient
+hc<-hclust(as.dist(1-cor(values, method="pearson")), method="average")
+plot(hc)
+
+#dev.off()
+```
+
+We could expect that samples will in 2 clusters of 3 as there are 3 samples for each group but that is not the case here. One of the f_f group has a similar expression pattern to the d_d group while the other samples cluster with samples of the same group. This could be because of an atypical sample or soemething of biological relevance. More samples would be required to further analyse this clustering which is unfortunately not available.
+
+## Performing PCA
+
+Principle Component Analysis (PCA) is a dimensionality reduction technique that is converts the original variables into a much smaller number of principal components that explain the variability in the data best. It is an interesting way to see how the samples vary and which samples vary in the most similar fashion. prcomp() and scatterplot3d() is used to visualise the first 3 Principal components.
+
+```{r pca_normalised, echo=TRUE}
+
+#png("figures/PCA.#png", width=850, height=600)
+
+### removed scale=T, i think its already normalised
+pca <- prcomp(t(values))
+# Plot the PCA results
+
+s3d<-scatterplot3d(pca$x[,1:3], pch=19, color=rainbow(1))
+s3d.coords <- s3d$xyz.convert(pca$x[,1:3])
+text(s3d.coords$x, s3d.coords$y, labels = colnames(values),pos = 3,offset = 0.5)
+
+#dev.off()
+```
+
+We can see a clear variability between both the groups along PC1 (x axis) which clearly implies that there is clear variability among both the groups of our samples which is what is expected given the nature of the two groups. This further supports our confidence of obtaining significant genes when we try to extract them further down the pipeline.
+
+## Perform fold filtering
+
+In this section, we first calculate the average fold change expression differences of the groups, First the group means are calculated then the comparison is done by building the contrast matrix and then the model fitting is performed. topTable() is used to obtain a dataframe "myresults" which contains many values for each gene for individual samples, such as logFC, adjusted p-value, B value, etc which is useful for filtering for significant genes.
+
+```{r fold_filtering, include=FALSE}
+
+#obtaining a matrix of expression values
+exprsvals <- exprs(eset)
+#RMA outputs log2 data while MAS5 outputs linear data
+#To convert from log…
+exprsvals10 <-2^exprsvals
+#check conversion
+exprsvals[1:10,]
+#converted
+exprsvals10[1:10,]
+
+#More fold filtering
+#check order of sample names
+mysamples <- sampleNames(eset)
+#display the list
+mysamples
+#it is useful to obtain a vector of ProbeIDs here
+probesets <- probeNames(mydata)
+#display the first 10 ProbeSets
+probesets[1:10]
+
+#Build final fold table
+#Calculate the means
+#Note mean of the log is not the same as the log of the mean!!
+Arid1a_f_f.mean <- apply(exprsvals10[,c("GSM4072331_AF1.CEL", "GSM4072332_AF2.CEL","GSM4072333_AF3.CEL")],1,mean)
+
+Arid1a_d_d.mean <- apply(exprsvals10[,c("GSM4072334_AD1.CEL", "GSM4072335_AD2.CEL","GSM4072336_AD3.CEL")],1,mean)
+#calculate some fold changes
+Arid1a_fold_change <- Arid1a_f_f.mean/Arid1a_d_d.mean
+##ES_iPS_OK <-ES.mean /iPS_OK.mean
+##ES_iPS_4F <-ES.mean /iPS_4F.mean
+##ES_NSC <-ES.mean /NSC.mean
+
+#build a summary table to hold all the data
+
+##all.data= cbind(ES.mean,iPS_OK.mean,iPS_4F.mean, NSC.mean, ES_iPS_OK,ES_iPS_4F, ES_NSC)
+all.data= cbind(Arid1a_fold_change)
+#check the column names
+colnames(all.data)
+#write the table of means as an output
+write.table(all.data,file="B236494_group_means.txt", quote=F,
+sep="\t",col.names=NA)
+```
+
+## Beginning statistical analysis
+
+In this section, the statistical tests will be performed using the makeContrasts(), lmFit(), eBayes(), and topTable(). At the end we obtain a txt file with the results from the topTable() with the values mentioned earlier.
+
+```{r limma_stats, echo=TRUE}
+
+#Check original sample order
+sampleNames(eset)
+#Rename the samples
+sampleNames(eset) <-
+c("GSM4072331_AF1.CEL","GSM4072332_AF2.CEL","GSM4072333_AF3.CEL","GSM4072334_AD1.CEL","GSM4072335_AD2.CEL","GSM4072336_AD3.CEL")
+#Check the samples have renamed
+sampleNames(eset)
+
+```
+
+```{r building_annotation, echo=TRUE}
+##Building annotation for differential gene identification
+#establish annotation for MOE430v2
+#which annotation do we need
+#modified from 
+#http://gettinggeneticsdone.blogspot.co.uk/2012/01/
+#annotating-limma-#results-with-gene.html
+
+eset@annotation
+
+
+#packages in the annotation package
+ls("package:mouse4302.db")
+
+#build an annotation table
+ID <- featureNames(eset)
+Symbol <- getSYMBOL(ID, "mouse4302.db")
+Name <- as.character(lookUp(ID, "mouse4302.db", "GENENAME"))
+tmp <- data.frame(ID=ID, Symbol=Symbol, Name=Name, stringsAsFactors=F)
+tmp[tmp=="NA"] <- NA #fix padding with NA characters 
+#assign as feature data of the current Eset
+fData(eset) <- tmp
+
+# Check for rows that don’t have an EntrezID
+missing_entrezid_count <- sum(is.na(fData(eset)$ENTREZID))
+
+print(missing_entrezid_count)
+
+```
+
+## Statistical analysis using Limma
+
+```{r limma_statistical_analysis, echo=TRUE}
+
+#Build the design matrix
+design <- model.matrix(~-1+factor(c(1,1,1,2,2,2)))
+colnames(design) <- c("Arid1a_f_f","Arid1a_d_d")
+#Check it makes sense
+sampleNames(eset)
+#output the design matrix
+design
+
+#This instructs Limma which comparisons to make
+contrastmatrix <- makeContrasts(Arid1a_f_f-Arid1a_d_d,levels=design)
+contrastmatrix
+
+#issue these commands to fit the model
+#and make the contrasts
+fit <- lmFit(eset, design)
+
+fit2 <- contrasts.fit(fit, contrastmatrix)
+
+#this last part essentially moderates the t-statistic using 
+#the borrowed variance approach described in class
+fit2 <- eBayes(fit2)
+
+#get the results
+topTable(fit2,coef=1,adjust="fdr")
+myresults <-topTable(fit2,coef=1, adjust="fdr", number=nrow(eset))
+write.table(myresults,"B236494_myresults.txt")
+
+myresults_sorted_by_abs_logFC <- myresults[order(-abs(myresults$logFC)), ]
+top_10_toptable_FC <- head(myresults_sorted_by_abs_logFC, 10)
+
+myresults_sorted_by_adj_p_value <- myresults[order(myresults$adj.P.Val), ]
+top_10_toptable_by_adj_p_value <- head(myresults_sorted_by_adj_p_value, 10)
+
+common_genes_logFC_and_adj_p_value <- intersect(top_10_toptable_FC$Symbol, top_10_toptable_by_adj_p_value$Symbol)
+print(common_genes_logFC_and_adj_p_value)
+
+common_genes_logFC_and_adj_p_value_information <- myresults[myresults$Symbol %in% common_genes_logFC_and_adj_p_value, ]
+print(common_genes_logFC_and_adj_p_value_information)
+```
+
+Looking at these results we can sort by different parameters and compare what genes are significant based on these values.
+
+There are actually some gene symbols which are present in both lists. These are displayed below:
+
+(images)
+
+## Functional Enrichment analysis
+
+In this section, Functional Enrichment Analysis (FEa) will be performed. This involves a few keys steps; Preparation of the gene set object for enrichment analysis, Check expression data for apt annotation, Perform the actual FEA, share the output.
+
+The reason why functional enrichment analysis is done is to find gene sets that are highly over-represented in certain biological functions or pathways (from MsigDB "Mm.H" here). The analysis method is chosen based on the study.
+
+Here, romer (Rotation gene set tests of MEan Ranks) is a more suitable choice due to a number of reasons. It is a competitive test where it pitts the different gene sets against one another. It evaluates changes at the level of gene sets which is suitable as it can consider the behaviour of genes as a collective within certain defined pathways or processes. It is also suitable to detect very subtle changes in the expression across a gene set which seems to be the case from the plots earlier. We can expect the expression to be downregulated as we know the d_d group has the gene deleted so the expression would be diminished. There are also other options such as mroast and camera but romer seems to be the best choice here.
+
+```{r functional_enrichment setup , echo=TRUE}
+
+Mm.H <- readRDS("/shared_files/MSigDB/Mm.h.all.v7.1.entrez.rds") 
+
+#Check that you have the required objects
+ls()
+
+#Show the full contents of the annotation package
+ls("package:mouse4302.db")
+
+#Show the annotation keys in this database
+keytypes(mouse4302.db) 
+#Check samplenNames
+sampleNames(eset)
+```
+
+## Process annotation for functional enrichment
+
+```{r process_annotation_for_enrichment, echo=TRUE}
+
+#Here we select from the annotation a number of keys with the primary key being PROBEID
+res <- select(mouse4302.db, keys = rownames(eset), columns = c("ENTREZID", "ENSEMBL","SYMBOL"), keytype="PROBEID")
+#View the top of the table
+head(res)
+#find the index of each row of the expression set in the 
+#annotation object res
+idx <- match(rownames(eset), res$PROBEID)
+#Use the index to set the phenotypic data in the ExpressionSet
+fData(eset) <- res[idx, ]
+head(fData(eset), 10)
+#Find all rows that don’t have an EntrezID and remove then
+eset_t<-eset[is.na(fData(eset)$ENTREZID)==0,]
+```
+
+## Actual Functional Enrichment Analysis Step
+
+```{r convert_indicex, echo=TRUE}
+
+#convert to indexes
+H.indices <- ids2indices(Mm.H,fData(eset_t)$ENTREZID)
+#Pick the most suitable enrichment analysis tool to find 
+#enrichment signatures in the data and run this tool So:-
+
+#I just run mroast here as an example- justify the selection of this method!
+
+#if you want to run mroast
+#results_mroast <-mroast(eset_t,index=H.indices,design=design,contrast=contrastmatrix[,1],adjust.method = "BH")
+#if you want to run camera
+#results_camera <-camera(eset_t,index=H.indices,design=design,contrast=contrastmatrix[,1],adjust.method = "BH")
+#if you want to run romer
+results_romer <-romer(eset_t,index=H.indices,design=design,contrast=contrastmatrix[,1],adjust.method = "BH")
+#View the results
+results_romer
+
+#Use help for other parameters. Note we might decide to use 
+#exactly the same model as our differential gene analysis for 
+#the enrichment analysis- in this case we can extract it from #the fit
+#sv <- squeezeVar(fit$sigma^2,df=fit$df.residual)
+
+write.table(results_romer,"B236494_romer_final_enrichment.txt",sep="\t")
+#You can then examine the results in “enrichment.txt”.  It is a text file.  It can be downloaded to view in a spreadsheet such as Excel.
+```
+
+Looking at the results, a few main results come to notice, when sorted by "Mixed" category:
+
+"HALLMARK_ESTROGEN_RESPONSE_LATE", "HALLMARK_APOPTOSIS" "HALLMARK_ESTROGEN_RESPONSE_EARLY" have low p-values in the "Mixed" category. We know that the deletion of the Arid1a gene has effects on hormones and development of the endometrium. This could be signifying the complex bidirectional dysregulation that happens when this gene is removed and the resultant hormonal imbalances and cell death that could be occuring.
+
+# Selecting Differentially expressed genes in the dataset
+
+```{r volcano_plot_limma_basic, echo=TRUE, fig.cap="Volcano plot of differential expression using limma"}
+
+#png("figures/volcano_plot_limma.#png", width=1500, height=750)
+
+# Using the volcanoplot function to create the plot
+volcanoplot(fit2, coef=1, style="p-value", highlight=10,
+            names=rownames(fit2$coefficients), 
+            xlab="Log2 Fold Change", ylab="-Log10 P-value",
+            pch=20, cex=1, main="Volcano Plot")
+
+#dev.off()
+
+```
+
+```{r topTreat code }
+
+# Extract top genes using topTreat, focusing on those exceeding the fold-change threshold
+topTreat_myresults <- topTreat(fit2, coef=1, adjust="BH", sort.by="p", number=Inf)
+write.table(topTreat_myresults, "B236494_topTreat_results.txt", sep="\t", quote=FALSE)
+
+top_genes_topTreat_by_adj_p_value <- topTreat_myresults[order(topTreat_myresults$adj.P.Val), ][1:10,]
+
+print(top_genes_topTreat_by_adj_p_value)
+
+```
+
+From this list, the two gene symbols which were present as an intersection between the earlier top 10 genes produced by logFC and adjusted p value are present in this as well. This is strong evidence that genes with this gene symbol are highly significant and should be explored in depth for their biological importance. \# Supplementary Material
+
+## Supplementary code to load .CEL files:
+
+```{r Supplementary Code, eval=FALSE}
+# This code can be used to generate the targets file. 
+# Kindly alter the name of the GEO query to retrieve
+# the right .tar file for analysis 
+
+library(GEOquery)
+
+
+filePaths = getGEOSuppFiles("GSE137166")
+
+filePaths
+
+rownames(filePaths[1])
+dir()
+
+
+dir(path = "./GSE137166")
+setwd("./GSE137166")
+
+system("tar -xvf GSE137166_RAW.tar")
+system("gzip -d *.gz")
+
+setwd("..")
+
+
+gds <- getGEO('GSE137166', destdir=".")
+
+gds <-gds[[1]]
+  
+gds
+
+phenoData(gds)
+
+phenoData(gds)$title
+
+
+rownames(phenoData(gds))
+
+
+targets_tab <-as.matrix(pData(phenoData(gds))[,c("title")])
+
+
+rownames(targets_tab) <-rownames(pData(phenoData(gds)))
+
+targets_tab
+
+write.table(targets_tab, file="targets_tab_main.txt",sep="\t",col.names=T,row.names=T)
+
+```
+
+```{r generate script & pdf, eval=FALSE}
+# This will give us the R script & report
+# This chunk does not run by default
+#purl("B236494_Basic_Analysis_Rmd_document.Rmd", output = "B236494_Basic_Analysis_Rmd_document.R", documentation = 2)
+
+# This code chunk will give us the pdf document
+#rmarkdown::render("B236494_Basic_Analysis_Rmd_document.Rmd", output_format = "pdf_document")
+```
